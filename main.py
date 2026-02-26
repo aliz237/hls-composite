@@ -124,6 +124,11 @@ for field in hls_mask_bitfields:
 """
 HLS_BITMASK = 14
 
+DUCKDB_EXTENSION_DIRECTORY = Path(os.environ["HOME"]) / "duckdb-extensions"
+
+if not DUCKDB_EXTENSION_DIRECTORY.exists():
+    raise FileNotFoundError(f"{DUCKDB_EXTENSION_DIRECTORY} does not exist")
+
 
 def parse_datetime_utc(dt_string: str) -> datetime:
     """
@@ -191,7 +196,10 @@ def get_stac_items(
     bbox: BBox, start_datetime: datetime, end_datetime: datetime, crs: CRS
 ) -> list[Item]:
     logger.info("querying HLS archive")
-    client = DuckdbClient(use_hive_partitioning=True)
+    client = DuckdbClient(
+        use_hive_partitioning=True,
+        extension_directory=DUCKDB_EXTENSION_DIRECTORY,
+    )
     client.execute(
         """
         CREATE OR REPLACE SECRET secret (
