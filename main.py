@@ -115,14 +115,21 @@ HLS_ODC_STAC_CONFIG = {
 DEFAULT_BANDS = ["red", "green", "blue", "nir_narrow", "swir_1", "swir_2"]
 DEFAULT_RESOLUTION = 30
 
-"""
-hls_bitmask:
-hls_mask_bitfields = [1, 2, 3]  # cloud shadow, adjacent to cloud shadow, cloud
-hls_bitmask = 0
-for field in hls_mask_bitfields:
-    hls_bitmask |= 1 << field
-"""
-HLS_BITMASK = 14
+def mask_and_scale(stack, bands):
+    """
+    Apply cloud, high aerosol, and range mask to stack and scale
+    """
+    cloud_bitmask = 14
+    high_aero_bitmask = 0b11000000
+    scale = 0.0001
+
+    mask = (stack.Fmask & cloud_bitmask) == 0
+    aero_mask = (stack.Fmask & high_aero_bitmask) != high_aero_bitmask
+    range_mask = (stack[bands] != NODATA) & (stack[bands] > 0) & (stack[bands] < 10000)
+    mask = mask & aero_mask & range_mask
+    cloud_free = stack[bands].where(mask).where(stack != NODATA) * scale
+
+    return cloud_free
 
 DUCKDB_EXTENSION_DIRECTORY = Path(os.environ["HOME"]) / "duckdb-extensions"
 
@@ -313,9 +320,8 @@ async def run(
         geobox=GeoBox.from_bbox(bbox=bbox, crs=crs, resolution=resolution, tight=True),
     ).sortby("time")
 
-    mask = stack["Fmask"] & HLS_BITMASK
 
-    cloud_free = stack[bands].where(mask == 0).where(stack != NODATA)
+    cloud_free = mask_and_scale(stack, bands)
 
     logger.info("computing median values")
     composite = cloud_free.median(dim="time", skipna=True).fillna(NODATA).compute()
@@ -333,7 +339,7 @@ async def run(
         da_to_export.rio.to_raster(
             output_file_path,
             driver="COG",
-            dtype=DTYPE,
+            dtype='float32',
             compress="DEFLATE",
         )
 
