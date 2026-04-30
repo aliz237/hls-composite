@@ -138,6 +138,19 @@ def max_ndvi_composite(stack):
     comp = stack.isel(time=idx).where(valid_ndvi).fillna(NODATA).compute()
     return comp
 
+def median_composite(stack):
+    return stack.median(dim="time", skipna=True).fillna(NODATA).compute()
+
+def which_composite_function(composite_type):
+    choice = {
+            'maxndvi': max_ndvi_composite,
+            'median': median_composite
+    }
+    if composite_type not in choice.keys():
+        raise KeyError(f'composite type must be one of {choice.keys()}, not {composite_type}')
+
+    return choice[composite_type]
+
 DUCKDB_EXTENSION_DIRECTORY = Path(os.environ["HOME"]) / "duckdb-extensions"
 
 if not DUCKDB_EXTENSION_DIRECTORY.exists():
@@ -269,6 +282,7 @@ async def run(
     bands: list[str] = DEFAULT_BANDS,
     resolution: int | float = DEFAULT_RESOLUTION,
     direct_bucket_access: bool = False,
+    composite_fun = median_composite
 ):
     items = get_stac_items(
         bbox=bbox,
@@ -330,8 +344,8 @@ async def run(
 
     cloud_free = mask_and_scale(stack, bands)
 
-    logger.info("computing median values")
-    composite = cloud_free.median(dim="time", skipna=True).fillna(NODATA).compute()
+    logger.info("computing composite values")
+    composite = composite_fun(cloud_free)
 
     assets = {}
     for band in bands:
@@ -437,6 +451,11 @@ if __name__ == "__main__":
         action="store_true",
         default=False,
     )
+    parse.add_argument(
+        "--composite_type",
+        help="options are median or maxndvi",
+        default='median',
+    )
     args = parse.parse_args()
 
     output_dir = Path(args.output_dir)
@@ -445,6 +464,7 @@ if __name__ == "__main__":
     validate_crs_units_in_meters(crs)
     start_datetime = parse_datetime_utc(args.start_datetime)
     end_datetime = parse_datetime_utc(args.end_datetime)
+    composite_fun = which_composite_function(args.composite_type)
 
     logging.info(
         f"setting GDAL config environment variables:\n{json.dumps(GDAL_CONFIG, indent=2)}"
@@ -452,7 +472,8 @@ if __name__ == "__main__":
     os.environ.update(GDAL_CONFIG)
 
     logging.info(
-        f"running with start_datetime: {start_datetime}, end_datetime: {end_datetime}, bbox: {bbox}, crs: {crs}, output_dir: {output_dir}"
+        f"running {args.composite_type} composite with start_datetime: {start_datetime} "
+        f"end_datetime: {end_datetime}, bbox: {bbox}, crs: {crs}, output_dir: {output_dir}"
     )
 
     # Retry loop for handling intermittent failures
@@ -469,6 +490,7 @@ if __name__ == "__main__":
                     crs=crs,
                     output_dir=output_dir,
                     direct_bucket_access=args.direct_bucket_access,
+                    composite_fun=composite_fun
                 )
             )
             logging.info("Successfully completed processing")
