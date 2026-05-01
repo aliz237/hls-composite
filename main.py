@@ -431,7 +431,7 @@ if __name__ == "__main__":
     parse.add_argument(
         "--bbox",
         help="bounding box (xmin, ymin, xmax, ymax)",
-        required=True,
+        required=False,
         nargs=4,
         type=float,
         metavar=("xmin", "ymin", "xmax", "ymax"),
@@ -439,7 +439,7 @@ if __name__ == "__main__":
     parse.add_argument(
         "--crs",
         help="CRS definition of the bounding box coordinates",
-        required=True,
+        required=False,
         type=str,
     )
     parse.add_argument(
@@ -456,15 +456,32 @@ if __name__ == "__main__":
         help="options are median or maxndvi",
         default='median',
     )
+    parse.add_argument(
+        "--aoi",
+        help="vector file area of interest",
+        required=False,
+        type=str,
+    )
     args = parse.parse_args()
 
     output_dir = Path(args.output_dir)
-    bbox = tuple(args.bbox)
-    crs = CRS.from_string(args.crs)
-    validate_crs_units_in_meters(crs)
+    if args.bbox:
+        bbox = tuple(args.bbox)
+        crs = CRS.from_string(args.crs)
+        validate_crs_units_in_meters(crs)
+    elif args.aoi:
+        import fiona
+        with fiona.open(args.aoi) as src:
+            profile = src.profile
+            crs = src.crs
+            bbox = src.bounds
+    else:
+        raise ValueError('Either aoi or (bbox and crs) must be provided.')
+
     start_datetime = parse_datetime_utc(args.start_datetime)
     end_datetime = parse_datetime_utc(args.end_datetime)
     composite_fun = which_composite_function(args.composite_type)
+
 
     logging.info(
         f"setting GDAL config environment variables:\n{json.dumps(GDAL_CONFIG, indent=2)}"
