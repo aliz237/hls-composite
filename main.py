@@ -8,6 +8,7 @@ import os
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from functools import partial
 from typing import Tuple
 
 import odc.stac
@@ -138,13 +139,23 @@ def max_ndvi_composite(stack):
     comp = stack.isel(time=idx).where(valid_ndvi).fillna(NODATA).compute()
     return comp
 
+def quantile_ndvi_composite(stack, q):
+    ndvi = (stack.nir - stack.red) / (stack.nir + stack.red)
+    valid_ndvi = ndvi.notnull().any(dim='time')
+
+    quant = ndvi.quantile(q, dim='time', skipna=True).fillna(NODATA)
+    idx = abs(ndvi - quant).argmin(dim='time').compute()
+    comp = stack.isel(time=idx).where(valid_ndvi).fillna(NODATA).compute()
+    return comp
+
 def median_composite(stack):
     return stack.median(dim="time", skipna=True).fillna(NODATA).compute()
 
-def which_composite_function(composite_type):
+def which_composite_function(composite_type, q):
     choice = {
-            'maxndvi': max_ndvi_composite,
-            'median': median_composite
+        'maxndvi': max_ndvi_composite,
+        'median': median_composite,
+        'qndvi': partial(quantile_ndvi_composite, q=q)
     }
     if composite_type not in choice.keys():
         raise KeyError(f'composite type must be one of {choice.keys()}, not {composite_type}')
@@ -510,8 +521,15 @@ if __name__ == "__main__":
     )
     parse.add_argument(
         "--composite_type",
-        help="options are median or maxndvi",
+        help="options are median, maxndvi, qndvi. If qndvi, --q must be given too.",
         default='median',
+    )
+    parse.add_argument(
+        "--q",
+        type=float,
+        default=0.98,
+        help=("Quantile of ndvi along the time dim, must be a float in [0,1]."
+              "Default %(default)s"),
     )
     parse.add_argument(
         "--aoi",
@@ -557,8 +575,7 @@ if __name__ == "__main__":
 
     start_datetime = parse_datetime_utc(args.start_datetime)
     end_datetime = parse_datetime_utc(args.end_datetime)
-    composite_fun = which_composite_function(args.composite_type)
-
+    composite_fun = which_composite_function(args.composite_type, q=args.q)
 
     logging.info(
         f"setting GDAL config environment variables:\n{json.dumps(GDAL_CONFIG, indent=2)}"
