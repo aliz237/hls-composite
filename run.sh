@@ -23,18 +23,6 @@ mkdir -p output
 INPUT_DIR=input
 OUTPUT_DIR=output
 
-# Parse positional arguments
-if [[ $# -ne 4 ]]; then
-    echo "Error: Expected 4 arguments, got $#"
-    echo "Usage: $0 <start_datetime> <end_datetime> <bbox_string> <crs>"
-    exit 1
-fi
-
-start_datetime="$1"
-end_datetime="$2"
-bbox="$3"
-crs="$4"
-
 # Call the script using the absolute paths
 # Use the updated environment when calling 'uv run'
 # This lets us run the same way in a Terminal as in DPS
@@ -44,10 +32,24 @@ crs="$4"
 unset PROJ_LIB
 unset PROJ_DATA
 
-UV_PROJECT=${basedir} uv run --no-dev ${basedir}/main.py \
-    --start_datetime "${start_datetime}" \
-    --end_datetime "${end_datetime}" \
-    --bbox ${bbox} \
-    --crs "${crs}" \
-    --output_dir="${OUTPUT_DIR}" \
+args=(
+    --start_datetime "${1}"
+    --end_datetime "${2}"
+    --output_name "${5}"
+    --output_dir "${OUTPUT_DIR}"
     --direct_bucket_access
+)
+
+[[ -n "${3}" ]] && args+=(--bbox "${3}")
+[[ -n "${4}" ]] && args+=(--crs "${4}")
+[[ -n "${6}" ]] && args+=(--aoi "${6}")
+[[ -n "${7}" ]] && args+=(--composite_type "${7}")
+[[ -n "${8}" ]] && args+=(--q "${8}")
+[[ -n "${9}" ]] && args+=(--lim "${9}")
+[[ -n "${10}" ]] && args+=(--catalog)
+
+export UV_PROJECT="${basedir}"
+
+command=(uv run --no-dev ${basedir}/main.py "${args[@]}")
+echo "${command[@]}"
+"${command[@]}"
