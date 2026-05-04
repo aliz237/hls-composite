@@ -294,6 +294,84 @@ def get_stac_items(
 
     return all_items
 
+def write_assets_and_catalog(bands, composite_type, composite, output_dir, start_datetime, end_datetime):
+    assets = {}
+    for band in bands:
+        href = f"{band}.tif"
+        logger.info(f"exporting {href}")
+        da = composite[band]
+        da.rio.set_nodata(NODATA, inplace=True)
+        da_to_export = da.rio.write_nodata(NODATA, encoded=True, inplace=False)
+
+        output_file_path = output_dir / href
+
+        da_to_export.rio.to_raster(
+            output_file_path,
+            driver="COG",
+            dtype='float32',
+            compress="DEFLATE",
+        )
+
+        assets[band] = Asset(
+            href=href,
+            description=f"{composite_type} {band} band value from cloud-free pixels in the temporal mosaic",
+            media_type=MediaType.COG,
+            roles=["data"],
+        )
+
+    catalog = Catalog(
+        id="DPS",
+        description="DPS",
+        catalog_type=CatalogType.SELF_CONTAINED,
+    )
+
+    # use one of the output files as a template for rio-stac
+    source_file = f"{output_dir}/{assets[bands[0]].href}"
+
+    item = create_stac_item(
+        source=source_file,
+        id="-".join(
+            [
+                "_".join(str(int(x)) for x in bbox),
+                start_datetime.strftime("%Y%m%d"),
+                end_datetime.strftime("%Y%m%d"),
+            ]
+        ),
+        with_proj=True,
+        properties={
+            "datetime": end_datetime.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "start_datetime": start_datetime.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "end_datetime": end_datetime.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        },
+    )
+
+    # replace auto-generated assets with our own
+    item.assets = assets
+
+    item.set_self_href(f"{output_dir}/item.json")
+
+    # finalize catalog and save to the output directory
+    catalog.add_item(item)
+    item.make_asset_hrefs_relative()
+
+    catalog.normalize_and_save(
+        root_href=str(output_dir),
+        catalog_type=CatalogType.SELF_CONTAINED,
+    )
+
+def write_multiband_raster(composite, output_dir, output_name):
+    for band in list(composite.data_vars):
+        composite[band].rio.set_nodata(NODATA, inplace=True)
+        composite[band].rio.write_nodata(NODATA, encoded=True, inplace=True)
+
+    composite.rio.to_raster(
+        output_dir / output_name,
+        driver="COG",
+        compress="DEFLATE",
+        dtype='float32',
+    )
+
+
 
 async def run(
     start_datetime: datetime,
@@ -305,7 +383,9 @@ async def run(
     resolution: int | float = DEFAULT_RESOLUTION,
     direct_bucket_access: bool = False,
     composite_fun = median_composite,
-    lim: int = None
+    lim: int = None,
+    catalog: bool = False,
+    output_name: str = None
 ):
     items = get_stac_items(
         bbox=bbox,
@@ -371,70 +451,17 @@ async def run(
 
     logger.info("computing composite values")
     composite = composite_fun(cloud_free)
-
-    assets = {}
-    for band in bands:
-        href = f"{band}.tif"
-        logger.info(f"exporting {href}")
-        da = composite[band]
-        da.rio.set_nodata(NODATA, inplace=True)
-        da_to_export = da.rio.write_nodata(NODATA, encoded=True, inplace=False)
-
-        output_file_path = output_dir / href
-
-        da_to_export.rio.to_raster(
-            output_file_path,
-            driver="COG",
-            dtype='float32',
-            compress="DEFLATE",
+    if catalog:
+        write_assets_and_catalog(
+            bands,
+            composite_type,
+            composite,
+            output_dir,
+            start_datetime,
+            end_datetime
         )
-
-        assets[band] = Asset(
-            href=href,
-            description=f"median {band} band value from cloud-free pixels in the temporal mosaic",
-            media_type=MediaType.COG,
-            roles=["data"],
-        )
-
-    catalog = Catalog(
-        id="DPS",
-        description="DPS",
-        catalog_type=CatalogType.SELF_CONTAINED,
-    )
-
-    # use one of the output files as a template for rio-stac
-    source_file = f"{output_dir}/{assets[bands[0]].href}"
-
-    item = create_stac_item(
-        source=source_file,
-        id="-".join(
-            [
-                "_".join(str(int(x)) for x in bbox),
-                start_datetime.strftime("%Y%m%d"),
-                end_datetime.strftime("%Y%m%d"),
-            ]
-        ),
-        with_proj=True,
-        properties={
-            "datetime": end_datetime.strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "start_datetime": start_datetime.strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "end_datetime": end_datetime.strftime("%Y-%m-%dT%H:%M:%SZ"),
-        },
-    )
-
-    # replace auto-generated assets with our own
-    item.assets = assets
-
-    item.set_self_href(f"{output_dir}/item.json")
-
-    # finalize catalog and save to the output directory
-    catalog.add_item(item)
-    item.make_asset_hrefs_relative()
-
-    catalog.normalize_and_save(
-        root_href=str(output_dir),
-        catalog_type=CatalogType.SELF_CONTAINED,
-    )
+    else:
+        write_multiband_raster(composite, output_dir, output_name)
 
 
 if __name__ == "__main__":
@@ -471,6 +498,11 @@ if __name__ == "__main__":
         "--output_dir", help="Directory in which to save output", required=True
     )
     parse.add_argument(
+        "--output_name",
+        help="cog name if writing a multiband raster",
+        required=False
+    )
+    parse.add_argument(
         "--direct_bucket_access",
         help="Use direct S3 bucket access instead of HTTP URLs",
         action="store_true",
@@ -494,6 +526,14 @@ if __name__ == "__main__":
         type=int,
         default=None
     )
+    parse.add_argument(
+        "--catalog",
+        help=("catalog and write individual stac assets to disk, "
+              "otherwise write a multiband raster"),
+        required=False,
+        action="store_true",
+        default=False
+    )
 
     args = parse.parse_args()
 
@@ -510,6 +550,10 @@ if __name__ == "__main__":
             bbox = src.bounds
     else:
         raise ValueError('Either aoi or (bbox and crs) must be provided.')
+
+    if not args.catalog and not args.output_name:
+        raise ValueError('Either write and catalog assets [--catalog] or write '
+                         'multiband tif [--output_name]')
 
     start_datetime = parse_datetime_utc(args.start_datetime)
     end_datetime = parse_datetime_utc(args.end_datetime)
@@ -542,7 +586,9 @@ if __name__ == "__main__":
                     output_dir=output_dir,
                     direct_bucket_access=args.direct_bucket_access,
                     composite_fun=composite_fun,
-                    lim=args.lim
+                    lim=args.lim,
+                    catalog=args.catalog,
+                    output_name=args.output_name
                 )
             )
             logging.info("Successfully completed processing")
