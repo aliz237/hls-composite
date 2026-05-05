@@ -40,7 +40,7 @@ args=(
     --direct_bucket_access
 )
 
-[[ -n "${3}" ]] && args+=(--bbox "${3}")
+[[ -n "${3}" ]] && args+=(--bbox ${3})
 [[ -n "${4}" ]] && args+=(--crs "${4}")
 [[ -n "${6}" ]] && args+=(--aoi "${6}")
 [[ -n "${7}" ]] && args+=(--composite_type "${7}")
