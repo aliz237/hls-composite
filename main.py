@@ -139,18 +139,35 @@ def mask_and_scale(stack, bands):
     """
     Apply cloud, high aerosol, and range mask to stack and scale
     """
-    cloud_bitmask = 14
+    cloud_bitmask = 0b00001110
     high_aero_bitmask = 0b11000000
     scale = 0.0001
+    debug = False
 
     mask = (stack.Fmask & cloud_bitmask) == 0
     aero_mask = (stack.Fmask & high_aero_bitmask) != high_aero_bitmask
     range_mask = (stack[bands] != NODATA) & (stack[bands] > 0) & (stack[bands] < 10000)
+
+    relaxed_mask = mask & range_mask  # ignores aerosol
     mask = mask & aero_mask & range_mask
+
+    raw_count = (stack.red != NODATA).sum(dim='time').astype('float32')
+    strict_count = stack[bands].where(mask).red.notnull().sum(dim="time").astype('float32')
+    relaxed_count = stack[bands].where(relaxed_mask).red.notnull().sum(dim="time").astype('float32')
+
+    # where strict has enough obs use strict, otherwise fall back to relaxed
+    use_strict = strict_count >= 1
+    mask = mask.where(use_strict, relaxed_mask)
+
+    final_count = stack[bands].where(mask).red.notnull().sum(dim="time").astype('float32')
     cloud_free = stack[bands].where(mask).where(stack[bands] != NODATA) * scale
     cloud_free['Fmask'] = stack.Fmask.where(stack.Fmask != FMASK_NODATA, NODATA).astype('float32')
     cloud_free['Fmask'].attrs.pop('nodata', None)
-
+    if debug:
+        cloud_free['raw_count'] = raw_count
+        cloud_free['strict_count'] = strict_count
+        cloud_free['relaxed_count'] = relaxed_count
+        cloud_free['final_count'] = final_count
     return cloud_free
 
 def max_ndvi_composite(stack):
