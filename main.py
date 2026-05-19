@@ -11,6 +11,7 @@ from pathlib import Path
 from functools import partial
 from typing import Tuple
 
+import boto3
 import odc.stac
 import rasterio
 import rioxarray  # noqa
@@ -33,6 +34,7 @@ logger = logging.getLogger(__name__)
 BBox = Tuple[float, float, float, float]
 
 MEMORY_GB = 8
+debug = True
 GDAL_CONFIG = {
     "CPL_TMPDIR": "/tmp",
     "CPL_VSIL_CURL_ALLOWED_EXTENSIONS": "TIF",
@@ -45,14 +47,14 @@ GDAL_CONFIG = {
     "PYTHONWARNINGS": "ignore",
     "VSI_CACHE": "TRUE",
     "VSI_CACHE_SIZE": "536870912",
-    "GDAL_NUM_THREADS": "ALL_CPUS",
+    "GDAL_NUM_THREADS": "1", #"ALL_CPUS",
     # micro scale retries
     "GDAL_HTTP_MAX_RETRY": "5",
     "GDAL_HTTP_RETRY_DELAY": "3",
     # 1MB chunks to send fewer http requests for large tiles
     "CPL_VSIL_CURL_CHUNK_SIZE": "1048576",
-    # "CPL_DEBUG": "ON" if debug else "OFF",
-    # "CPL_CURL_VERBOSE": "YES" if debug else "NO",
+    "CPL_DEBUG": "ON" if debug else "OFF",
+    "CPL_CURL_VERBOSE": "YES" if debug else "NO",
 }
 
 HLS_COLLECTIONS = ["HLSL30_2.0", "HLSS30_2.0"]
@@ -290,6 +292,12 @@ def filter_cloud(items, lim=90, start=0, inc=5, n=100):
     )
     return filtered_items
 
+def boto3_creds():
+    s = boto3.Session()
+    creds = s.get_credentials().get_frozen_credentials()
+    #return creds.access_key, creds.secret_key, creds.token
+    return creds
+
 
 def get_stac_items(
     bbox: BBox, start_datetime: datetime, end_datetime: datetime, crs: CRS,
@@ -300,14 +308,16 @@ def get_stac_items(
         use_hive_partitioning=True,
         extension_directory=DUCKDB_EXTENSION_DIRECTORY,
     )
-    client.execute(
-        """
-        CREATE OR REPLACE SECRET secret (
-             TYPE S3,
-             PROVIDER CREDENTIAL_CHAIN
-        );
-        """
-    )
+    creds = boto3_creds()
+    client.execute(f"""
+    CREATE OR REPLACE SECRET secret (
+    TYPE S3,
+    KEY_ID '{creds.access_key}',
+    SECRET '{creds.secret_key}',
+    SESSION_TOKEN '{creds.token}',
+    REGION 'us-west-2'
+    );
+    """)
 
     items = []
     for collection in HLS_COLLECTIONS:
@@ -457,7 +467,6 @@ async def run(
         crs=crs,
         lim=lim
     )
-
     rasterio_env = {}
     if direct_bucket_access:
         maap = MAAP(maap_host="api.maap-project.org")
@@ -504,6 +513,10 @@ async def run(
                     item.ext.proj.transform = list(src.transform)
 
     logger.info(f"fixed proj metadata for {fixed_count} items")
+    # from dask.distributed import Client
+    # client = Client(n_workers=4, threads_per_worker=1, memory_limit="3GB")
+    # print(client)
+
 
     logger.info("loading into xarray via odc.stac")
     stack = odc.stac.load(
