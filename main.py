@@ -538,9 +538,19 @@ async def run(
     rasterio_env = {}
     if direct_bucket_access:
         maap = MAAP(maap_host="api.maap-project.org")
-        creds = maap.aws.earthdata_s3_credentials(
-            "https://data.lpdaac.earthdatacloud.nasa.gov/s3credentials"
-        )
+        try:
+            creds = maap.aws.earthdata_s3_credentials(
+                "https://data.lpdaac.earthdatacloud.nasa.gov/s3credentials"
+            )
+        except Exception as e:
+            logger.info(e)
+            logger.info('trying earthacess login')
+            os.environ['EARTHDATA_USERNAME'] = maap.secrets.get_secret('EARTHDATA_USERNAME')
+            os.environ['EARTHDATA_PASSWORD'] = maap.secrets.get_secret('EARTHDATA_PASSWORD')
+            import earthaccess as ea
+            ea.login()
+            creds = ea.get_s3_credentials(provider='LPCLOUD')
+
         odc.stac.configure_rio(
             cloud_defaults=True,
             aws={
