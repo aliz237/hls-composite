@@ -35,7 +35,6 @@ logger = logging.getLogger(__name__)
 BBox = Tuple[float, float, float, float]
 
 MEMORY_GB = 8
-debug = True
 GDAL_CONFIG = {
     "CPL_TMPDIR": "/tmp",
     "CPL_VSIL_CURL_ALLOWED_EXTENSIONS": "TIF",
@@ -54,8 +53,6 @@ GDAL_CONFIG = {
     "GDAL_HTTP_RETRY_DELAY": "3",
     # 1MB chunks to send fewer http requests for large tiles
     "CPL_VSIL_CURL_CHUNK_SIZE": "1048576",
-    "CPL_DEBUG": "ON" if debug else "OFF",
-    "CPL_CURL_VERBOSE": "YES" if debug else "NO",
 }
 
 HLS_COLLECTIONS = ["HLSL30_2.0", "HLSS30_2.0"]
@@ -297,7 +294,6 @@ def filter_cloud(items, max_cloud_cover=90, start=0, inc=5, max_n=200):
 def boto3_creds():
     s = boto3.Session()
     creds = s.get_credentials().get_frozen_credentials()
-    #return creds.access_key, creds.secret_key, creds.token
     return creds
 
 
