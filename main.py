@@ -274,15 +274,15 @@ def group_by_sensor_and_date(
 
     return f"{sensor}_{day}"
 
-def filter_cloud(items, lim=90, start=0, inc=5, n=100):
+def filter_cloud(items, max_cloud_cover=90, start=0, inc=5, max_n=200):
     ''' start at eo:cloud_cover=start, increment by inc
-    until n items are found or lim is reached'''
+    until n items are found or max_cloud_cover is reached'''
     stats = dict()
-    for cc in range(start, lim+inc, inc):
+    for cc in range(start, max_cloud_cover+inc, inc):
         filtered_items = [i for i in items
                           if i.properties['eo:cloud_cover'] < cc]
         stats[cc] = len(filtered_items)
-        if len(filtered_items) >= n:
+        if len(filtered_items) >= max_n:
             break
 
     logger.info(
@@ -294,7 +294,7 @@ def filter_cloud(items, lim=90, start=0, inc=5, n=100):
 
 def get_stac_items(
     bbox: BBox, start_datetime: datetime, end_datetime: datetime, crs: CRS,
-    lim: int = None
+    max_cloud_cover: int = None, max_n:int = None
 ) -> list[Item]:
     logger.info("querying HLS archive")
     client = DuckdbClient(
@@ -345,8 +345,8 @@ def get_stac_items(
     logger.info(f"found {len(items)} items")
     all_items = [Item.from_dict(item) for item in items]
 
-    if lim:
-        return filter_cloud(all_items, n=lim)
+    if max_n or max_cloud_cover:
+        return filter_cloud(all_items, max_n=max_n, max_cloud_cover=max_cloud_cover)
 
     return all_items
 
@@ -522,7 +522,8 @@ async def run(
     direct_bucket_access: bool = False,
     method: str = 'median',
     q: float = 0.98,
-    lim: int = None,
+    max_cloud_cover: int = None,
+    max_n: int = None,
     catalog: bool = False,
     output_name: str = None,
     indices: list[str] = None,
@@ -532,7 +533,8 @@ async def run(
         start_datetime=start_datetime,
         end_datetime=end_datetime,
         crs=crs,
-        lim=lim
+        max_n=max_n,
+        max_cloud_cover=max_cloud_cover
     )
 
     rasterio_env = {}
@@ -676,12 +678,12 @@ if __name__ == "__main__":
         type=str,
     )
     parse.add_argument(
-        "--lim",
-        help="Limit the number of stac items",
+        "--max_cloud_cover",
+        help=(f"maximum cloud cover percent allowed for composite items, in range [0, 100]"),
         required=False,
         type=int,
-        default=None
     )
+
     parse.add_argument(
         "--catalog",
         help=("catalog and write individual stac assets to disk, "
@@ -697,6 +699,12 @@ if __name__ == "__main__":
         nargs='*',
         type=str,
         default=[]
+    )
+    parse.add_argument(
+        "--max_n",
+        help="Limit the number of stac items",
+        required=False,
+        type=int,
     )
 
 
@@ -724,9 +732,17 @@ if __name__ == "__main__":
     end_datetime = parse_datetime_utc(args.end_datetime)
     if args.composite_type not in ('maxndvi', 'qndvi', 'median'):
         raise ValueError('composite_type must be one of maxndvi, qndvi, median')
+    if args.q > 1 or args.q < 0:
+        raise ValueError('Quantile argument (q) must be a float in range [0, 1]')
 
     if not set(args.indices) <= INDEX_FUNS.keys():
         raise ValueError(f'--indices must be a subset of {INDEX_FUNS.keys()}')
+    if args.max_cloud_cover is not None or args.max_n is not None:
+        # if only one arg is passed, the other must be compatible o.w filter breaks
+        if args.max_cloud_cover is None:
+            args.max_cloud_cover = 100
+        if args.max_n is None:
+            args.max_n = 500
 
     logging.info(
         f"setting GDAL config environment variables:\n{json.dumps(GDAL_CONFIG, indent=2)}"
@@ -751,10 +767,11 @@ if __name__ == "__main__":
                     direct_bucket_access=args.direct_bucket_access,
                     method=args.composite_type,
                     q=args.q,
-                    lim=args.lim,
+                    max_cloud_cover=args.max_cloud_cover,
                     catalog=args.catalog,
                     output_name=args.output_name,
                     indices=args.indices,
+                    max_n=args.max_n
                 )
             )
             logging.info("Successfully completed processing")
