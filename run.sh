@@ -49,6 +49,7 @@ args=(
 [[ -n "${10}" ]] && args+=(--catalog)
 [[ -n "${11}" ]] && args+=(--indices ${11})
 [[ -n "${12}" ]] && args+=(--max_n "${12}")
+[[ -n "${13}" ]] && args+=(--count_layers ${13})
 
 export UV_PROJECT="${basedir}"
 
