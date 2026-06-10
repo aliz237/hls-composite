@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Tuple
 
+import boto3
 import odc.stac
 import rasterio
 import rioxarray  # noqa
@@ -34,6 +35,7 @@ logger = logging.getLogger(__name__)
 BBox = Tuple[float, float, float, float]
 
 MEMORY_GB = 8
+debug = True
 GDAL_CONFIG = {
     "CPL_TMPDIR": "/tmp",
     "CPL_VSIL_CURL_ALLOWED_EXTENSIONS": "TIF",
@@ -52,8 +54,8 @@ GDAL_CONFIG = {
     "GDAL_HTTP_RETRY_DELAY": "3",
     # 1MB chunks to send fewer http requests for large tiles
     "CPL_VSIL_CURL_CHUNK_SIZE": "1048576",
-    # "CPL_DEBUG": "ON" if debug else "OFF",
-    # "CPL_CURL_VERBOSE": "YES" if debug else "NO",
+    "CPL_DEBUG": "ON" if debug else "OFF",
+    "CPL_CURL_VERBOSE": "YES" if debug else "NO",
 }
 
 HLS_COLLECTIONS = ["HLSL30_2.0", "HLSS30_2.0"]
@@ -135,15 +137,15 @@ INDEX_FUNS = {
     'nbr': lambda s: (s.nir - s.swir_2) / (s.nir + s.swir_2),
     'nbr2': lambda s: (s.swir_1 - s.swir_2) / (s.swir_1 + s.swir_2),
 }
+COUNT_LAYERS = {'raw_count', 'strict_count', 'relaxed_count', 'final_count'}
 
-def mask_and_scale(stack, bands):
+def mask_and_scale(stack, bands, count_layers=None):
     """
     Apply cloud, high aerosol, and range mask to stack and scale
     """
     cloud_bitmask = 0b00001110
     high_aero_bitmask = 0b11000000
     scale = 0.0001
-    debug = False
 
     mask = (stack.Fmask & cloud_bitmask) == 0
     aero_mask = (stack.Fmask & high_aero_bitmask) != high_aero_bitmask
@@ -151,24 +153,25 @@ def mask_and_scale(stack, bands):
 
     relaxed_mask = mask & range_mask  # ignores aerosol
     mask = mask & aero_mask & range_mask
-
-    raw_count = (stack.red != NODATA).sum(dim='time').astype('float32')
-    strict_count = stack[bands].where(mask).red.notnull().sum(dim="time").astype('float32')
-    relaxed_count = stack[bands].where(relaxed_mask).red.notnull().sum(dim="time").astype('float32')
+    counts = {}
+    counts['raw_count'] = (stack.red != NODATA).sum(dim='time').astype('float32')
+    counts['strict_count'] = stack[bands].where(mask).red.notnull().sum(dim="time").astype('float32')
+    counts['relaxed_count'] = stack[bands].where(relaxed_mask).red.notnull().sum(dim="time").astype('float32')
 
     # where strict has enough obs use strict, otherwise fall back to relaxed
-    use_strict = strict_count >= 1
+    use_strict = counts['strict_count'] >= 1
     mask = mask.where(use_strict, relaxed_mask)
 
-    final_count = stack[bands].where(mask).red.notnull().sum(dim="time").astype('float32')
+    counts['final_count'] = stack[bands].where(mask).red.notnull().sum(dim="time").astype('float32')
     cloud_free = stack[bands].where(mask).where(stack[bands] != NODATA) * scale
     cloud_free['Fmask'] = stack.Fmask.where(stack.Fmask != FMASK_NODATA, NODATA).astype('float32')
     cloud_free['Fmask'].attrs.pop('nodata', None)
-    if debug:
-        cloud_free['raw_count'] = raw_count
-        cloud_free['strict_count'] = strict_count
-        cloud_free['relaxed_count'] = relaxed_count
-        cloud_free['final_count'] = final_count
+
+    # add count_layers to stack if requested
+    for k, v in counts.items():
+        if k in count_layers:
+            cloud_free[k] = v
+
     return cloud_free
 
 def max_ndvi_composite(stack):
@@ -291,6 +294,12 @@ def filter_cloud(items, max_cloud_cover=90, start=0, inc=5, max_n=200):
     )
     return filtered_items
 
+def boto3_creds():
+    s = boto3.Session()
+    creds = s.get_credentials().get_frozen_credentials()
+    #return creds.access_key, creds.secret_key, creds.token
+    return creds
+
 
 def get_stac_items(
     bbox: BBox, start_datetime: datetime, end_datetime: datetime, crs: CRS,
@@ -301,14 +310,16 @@ def get_stac_items(
         use_hive_partitioning=True,
         extension_directory=DUCKDB_EXTENSION_DIRECTORY,
     )
-    client.execute(
-        """
-        CREATE OR REPLACE SECRET secret (
-             TYPE S3,
-             PROVIDER CREDENTIAL_CHAIN
-        );
-        """
-    )
+    creds = boto3_creds()
+    client.execute(f"""
+    CREATE OR REPLACE SECRET secret (
+    TYPE S3,
+    KEY_ID '{creds.access_key}',
+    SECRET '{creds.secret_key}',
+    SESSION_TOKEN '{creds.token}',
+    REGION 'us-west-2'
+    );
+    """)
 
     items = []
     for collection in HLS_COLLECTIONS:
@@ -527,6 +538,7 @@ async def run(
     catalog: bool = False,
     output_name: str = None,
     indices: list[str] = None,
+    count_layers: list[str] = None,
 ):
     items = get_stac_items(
         bbox=bbox,
@@ -536,7 +548,6 @@ async def run(
         max_n=max_n,
         max_cloud_cover=max_cloud_cover
     )
-
     rasterio_env = {}
     if direct_bucket_access:
         maap = MAAP(maap_host="api.maap-project.org")
@@ -596,7 +607,7 @@ async def run(
     ).sortby("time")
     logger.info(f"{stack.info()}\n{stack.chunk()}")
 
-    stack = mask_and_scale(stack, bands)
+    stack = mask_and_scale(stack, bands, count_layers)
 
     logger.info("computing composite values")
     composite = calculate_composite(stack, indices if indices else [], method, q)
@@ -701,6 +712,14 @@ if __name__ == "__main__":
         default=[]
     )
     parse.add_argument(
+        "--count_layers",
+        help=(f"space separated list of any of {COUNT_LAYERS}"),
+        required=False,
+        nargs='*',
+        type=str,
+        default=[]
+    )
+    parse.add_argument(
         "--max_n",
         help="Limit the number of stac items",
         required=False,
@@ -737,6 +756,8 @@ if __name__ == "__main__":
 
     if not set(args.indices) <= INDEX_FUNS.keys():
         raise ValueError(f'--indices must be a subset of {INDEX_FUNS.keys()}')
+    if not set(args.count_layers) <= COUNT_LAYERS:
+        raise ValueError(f'--count_layers must be a subset of {COUNT_LAYERS}')
     if args.max_cloud_cover is not None or args.max_n is not None:
         # if only one arg is passed, the other must be compatible o.w filter breaks
         if args.max_cloud_cover is None:
@@ -771,7 +792,8 @@ if __name__ == "__main__":
                     catalog=args.catalog,
                     output_name=args.output_name,
                     indices=args.indices,
-                    max_n=args.max_n
+                    max_n=args.max_n,
+                    count_layers=args.count_layers
                 )
             )
             logging.info("Successfully completed processing")
