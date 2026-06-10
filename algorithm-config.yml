@@ -1,6 +1,6 @@
 algorithm_description: Generate cloud-free temporal mosaics from HLS data
 algorithm_name: hls-composite
-algorithm_version: dev
+algorithm_version: dev_v1.1
 build_command: hls-composite/build-env.sh
 disk_space: 8GB
 docker_container_url: mas.maap-project.org/root/maap-workspaces/custom_images/maap_base:v4.3.0
@@ -42,8 +42,8 @@ inputs:
     name: q
     required: false
   - default: ''
-    description: max number of stac assets (items) to be merged
-    name: lim
+    description: max_cloud_cover
+    name: max_cloud_cover
     required: false
   - default: ''
     description: Build catolog of composite assets, mutually exclusive with output_name
@@ -52,6 +52,10 @@ inputs:
   - default: ''
     description: list of space separated indices (lower case), e.g, ndvi, nbr, evi, ...
     name: indices
+    required: false
+  - default: ''
+    description: max_n
+    name: max_n
     required: false
 
 

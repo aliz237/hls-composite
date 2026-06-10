@@ -45,9 +45,10 @@ args=(
 [[ -n "${6}" ]] && args+=(--aoi "${6}")
 [[ -n "${7}" ]] && args+=(--composite_type "${7}")
 [[ -n "${8}" ]] && args+=(--q "${8}")
-[[ -n "${9}" ]] && args+=(--lim "${9}")
+[[ -n "${9}" ]] && args+=(--max_cloud_cover "${9}")
 [[ -n "${10}" ]] && args+=(--catalog)
 [[ -n "${11}" ]] && args+=(--indices ${11})
+[[ -n "${12}" ]] && args+=(--max_n "${12}")
 
 export UV_PROJECT="${basedir}"
 
