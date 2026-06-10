@@ -137,15 +137,15 @@ INDEX_FUNS = {
     'nbr': lambda s: (s.nir - s.swir_2) / (s.nir + s.swir_2),
     'nbr2': lambda s: (s.swir_1 - s.swir_2) / (s.swir_1 + s.swir_2),
 }
+COUNT_LAYERS = {'raw_count', 'strict_count', 'relaxed_count', 'final_count'}
 
-def mask_and_scale(stack, bands):
+def mask_and_scale(stack, bands, count_layers=None):
     """
     Apply cloud, high aerosol, and range mask to stack and scale
     """
     cloud_bitmask = 0b00001110
     high_aero_bitmask = 0b11000000
     scale = 0.0001
-    debug = False
 
     mask = (stack.Fmask & cloud_bitmask) == 0
     aero_mask = (stack.Fmask & high_aero_bitmask) != high_aero_bitmask
@@ -153,24 +153,25 @@ def mask_and_scale(stack, bands):
 
     relaxed_mask = mask & range_mask  # ignores aerosol
     mask = mask & aero_mask & range_mask
-
-    raw_count = (stack.red != NODATA).sum(dim='time').astype('float32')
-    strict_count = stack[bands].where(mask).red.notnull().sum(dim="time").astype('float32')
-    relaxed_count = stack[bands].where(relaxed_mask).red.notnull().sum(dim="time").astype('float32')
+    counts = {}
+    counts['raw_count'] = (stack.red != NODATA).sum(dim='time').astype('float32')
+    counts['strict_count'] = stack[bands].where(mask).red.notnull().sum(dim="time").astype('float32')
+    counts['relaxed_count'] = stack[bands].where(relaxed_mask).red.notnull().sum(dim="time").astype('float32')
 
     # where strict has enough obs use strict, otherwise fall back to relaxed
-    use_strict = strict_count >= 1
+    use_strict = counts['strict_count'] >= 1
     mask = mask.where(use_strict, relaxed_mask)
 
-    final_count = stack[bands].where(mask).red.notnull().sum(dim="time").astype('float32')
+    counts['final_count'] = stack[bands].where(mask).red.notnull().sum(dim="time").astype('float32')
     cloud_free = stack[bands].where(mask).where(stack[bands] != NODATA) * scale
     cloud_free['Fmask'] = stack.Fmask.where(stack.Fmask != FMASK_NODATA, NODATA).astype('float32')
     cloud_free['Fmask'].attrs.pop('nodata', None)
-    if debug:
-        cloud_free['raw_count'] = raw_count
-        cloud_free['strict_count'] = strict_count
-        cloud_free['relaxed_count'] = relaxed_count
-        cloud_free['final_count'] = final_count
+
+    # add count_layers to stack if requested
+    for k, v in counts.items():
+        if k in count_layers:
+            cloud_free[k] = v
+
     return cloud_free
 
 def max_ndvi_composite(stack):
@@ -537,6 +538,7 @@ async def run(
     catalog: bool = False,
     output_name: str = None,
     indices: list[str] = None,
+    count_layers: list[str] = None,
 ):
     items = get_stac_items(
         bbox=bbox,
@@ -605,7 +607,7 @@ async def run(
     ).sortby("time")
     logger.info(f"{stack.info()}\n{stack.chunk()}")
 
-    stack = mask_and_scale(stack, bands)
+    stack = mask_and_scale(stack, bands, count_layers)
 
     logger.info("computing composite values")
     composite = calculate_composite(stack, indices if indices else [], method, q)
@@ -710,6 +712,14 @@ if __name__ == "__main__":
         default=[]
     )
     parse.add_argument(
+        "--count_layers",
+        help=(f"space separated list of any of {COUNT_LAYERS}"),
+        required=False,
+        nargs='*',
+        type=str,
+        default=[]
+    )
+    parse.add_argument(
         "--max_n",
         help="Limit the number of stac items",
         required=False,
@@ -746,6 +756,8 @@ if __name__ == "__main__":
 
     if not set(args.indices) <= INDEX_FUNS.keys():
         raise ValueError(f'--indices must be a subset of {INDEX_FUNS.keys()}')
+    if not set(args.count_layers) <= COUNT_LAYERS:
+        raise ValueError(f'--count_layers must be a subset of {COUNT_LAYERS}')
     if args.max_cloud_cover is not None or args.max_n is not None:
         # if only one arg is passed, the other must be compatible o.w filter breaks
         if args.max_cloud_cover is None:
@@ -780,7 +792,8 @@ if __name__ == "__main__":
                     catalog=args.catalog,
                     output_name=args.output_name,
                     indices=args.indices,
-                    max_n=args.max_n
+                    max_n=args.max_n,
+                    count_layers=args.count_layers
                 )
             )
             logging.info("Successfully completed processing")
